@@ -1,0 +1,12 @@
+{
+  "id": "oi-news-report",
+  "name": "OI News Report",
+  "description": "One-slide portrait PPT for concise OI or market-news reporting.",
+  "outputType": "ppt",
+  "sectionHints": [
+    "Headline",
+    "Key News",
+    "Strategic Relevance",
+    "Watch Items"
+  ]
+}

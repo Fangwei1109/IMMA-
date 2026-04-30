@@ -1,0 +1,13 @@
+{
+  "id": "interview-knowledge-base",
+  "name": "Interview Memo",
+  "description": "Structured markdown memo for management, expert, and technical diligence calls.",
+  "outputType": "markdown",
+  "sectionHints": [
+    "Core Takeaways",
+    "Business and Strategy",
+    "Technology and Product",
+    "Financial Signals",
+    "Open Questions"
+  ]
+}

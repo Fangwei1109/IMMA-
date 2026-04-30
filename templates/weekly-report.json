@@ -1,0 +1,12 @@
+{
+  "id": "weekly-report",
+  "name": "Weekly Report Slide",
+  "description": "One-page weekly update format optimized for a concise slide.",
+  "outputType": "markdown",
+  "sectionHints": [
+    "Headline",
+    "Key Updates",
+    "Risks",
+    "Next Steps"
+  ]
+}

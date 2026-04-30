@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Meeting Automation MVP</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Meeting OS</p>
+          <h1>From audio or transcript to memo or weekly report.</h1>
+          <p class="lede">
+            Start with audio or a transcript. Then choose whether we turn it into an
+            editable interview memo or a weekly report deck.
+          </p>
+        </div>
+        <div class="hero-card">
+          <p class="hero-card-label">Detected Obsidian Vault</p>
+          <h2 id="obsidian-vault">Checking...</h2>
+          <p id="llm-status" class="muted">Checking model connection...</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <form id="process-form" class="workflow-form">
+          <section class="flow-section">
+            <div class="flow-header">
+              <span class="flow-step">01</span>
+              <div>
+                <h2>Clean Transcript</h2>
+                <p class="muted">Start from audio or an existing transcript, then create a cleaned transcript before memo generation.</p>
+              </div>
+            </div>
+
+            <div class="compact-grid">
+              <label class="optional-field">
+                Meeting title
+                <input name="meetingTitle" placeholder="Optional" />
+              </label>
+
+              <label class="optional-field">
+                Company
+                <input name="company" placeholder="Optional" />
+              </label>
+            </div>
+
+            <div class="source-pair-grid">
+              <label class="source-card">
+                <span>Audio file</span>
+                <small>Use this when you want ASR to generate the transcript first.</small>
+                <input name="audio" type="file" accept=".mp3,.m4a,.wav,.aac,.ogg,.webm,.mp4" />
+              </label>
+
+              <label class="source-card">
+                <span>Transcript file</span>
+                <small>Use this when you already have a transcript from another tool.</small>
+                <input
+                  name="transcriptFile"
+                  type="file"
+                  accept=".txt,.md,.json,.docx,.doc,.pdf"
+                />
+              </label>
+            </div>
+
+            <details class="advanced-panel audio-advanced">
+              <summary>Audio transcription settings</summary>
+              <div class="compact-grid advanced-grid single-advanced">
+                <label>
+                  ASR provider
+                  <select id="asr-provider-select" name="asrProvider"></select>
+                </label>
+              </div>
+            </details>
+
+            <textarea id="clean-transcript-text" name="transcriptText" class="hidden"></textarea>
+
+            <div class="submit-row split-actions">
+              <button type="button" id="transcribe-button" class="primary-action">Create Clean Transcript</button>
+              <p id="transcript-step-status" class="muted inline-status">No transcript processed yet.</p>
+            </div>
+          </section>
+
+          <details class="preview-block transcript-preview workflow-preview" open>
+            <summary>Clean Transcript Preview</summary>
+            <pre id="result-transcript" class="code-block compact-code-block">Cleaned transcript will appear here after audio transcription or transcript upload.</pre>
+          </details>
+
+          <section id="memo-step" class="flow-section locked-step">
+            <div class="flow-header">
+              <span class="flow-step">02</span>
+              <div>
+                <h2>Generate Memo</h2>
+                <p class="muted">Choose the memo style, add supporting material, and give the LLM overall generation instructions.</p>
+              </div>
+            </div>
+
+            <div class="choice-stack" id="template-cards">
+              <label class="choice-card active">
+                <input type="radio" name="templateId" value="interview-knowledge-base" checked />
+                <span class="choice-title">Interview Memo</span>
+                <span class="choice-copy">Structured markdown note for diligence, management, and expert calls.</span>
+              </label>
+              <label class="choice-card">
+                <input type="radio" name="templateId" value="interview-free-style" />
+                <span class="choice-title">Free Style Memo</span>
+                <span class="choice-copy">Flexible markdown note that follows the interview's natural focus and avoids forcing a full-company layout.</span>
+              </label>
+              <label class="choice-card">
+                <input type="radio" name="templateId" value="oi-news-report" />
+                <span class="choice-title">OI News Report</span>
+                <span class="choice-copy">One-slide portrait PPT for concise news, market signals, and OI reporting.</span>
+              </label>
+            </div>
+            <p id="template-recommendation" class="muted recommendation-copy">
+              The app can recommend a memo structure after it reads your transcript.
+            </p>
+
+            <div class="compact-grid single-advanced">
+              <label>
+                Meeting type
+                <select name="meetingType">
+                  <option value="management-interview">Management interview</option>
+                  <option value="technical-diligence">Technical diligence</option>
+                  <option value="expert-call">Expert call</option>
+                  <option value="weekly-sync">Weekly sync</option>
+                </select>
+              </label>
+            </div>
+
+            <label class="full-width">
+              Supporting materials
+              <input
+                name="materials"
+                type="file"
+                multiple
+                accept=".pdf,.txt,.md,.json,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.webp,.gif,.bmp"
+              />
+            </label>
+
+            <label class="full-width">
+              Generation instructions
+              <textarea
+                name="userInstructions"
+                rows="5"
+                placeholder="Overall prompt for this output. Example: Focus on technology differentiation; preserve all company-side details; highlight Pre-IPO collaboration angles."
+              ></textarea>
+            </label>
+
+            <details class="advanced-panel">
+              <summary>Advanced settings</summary>
+              <div class="compact-grid advanced-grid single-advanced">
+                <label>
+                  LLM provider
+                  <select id="llm-provider-select" name="llmProvider"></select>
+                </label>
+              </div>
+            </details>
+
+            <div class="submit-row">
+              <button type="submit" id="submit-button" disabled>Generate Memo Draft</button>
+            </div>
+          </section>
+        </form>
+      </section>
+
+      <section class="results-grid">
+        <article class="panel">
+          <div class="section-header">
+            <div>
+              <h2>Output</h2>
+              <p class="muted">Review the memo, download/export it, then optionally derive a weekly report.</p>
+            </div>
+            <span id="status-pill" class="pill">Idle</span>
+          </div>
+
+          <div class="progress-shell" aria-label="Generation progress">
+            <div id="progress-bar" class="progress-bar"></div>
+          </div>
+          <p id="progress-label" class="muted progress-label">Waiting to start.</p>
+
+          <div class="result-actions primary-downloads">
+            <a id="transcript-download-link" class="ghost-button hidden" href="#" download>Download Transcript</a>
+            <a id="markdown-download-link" class="ghost-button hidden" href="#" download>Download Markdown</a>
+            <a id="ppt-download-link" class="ghost-button hidden" href="#" download>Download PPT</a>
+            <button id="obsidian-export-button" type="button" class="ghost-button" disabled>Save to Obsidian</button>
+          </div>
+
+          <details id="advanced-artifacts" class="advanced-artifacts hidden">
+            <summary>Advanced artifacts</summary>
+            <p class="muted">
+              Optional trace files for debugging, source audit, or improving prompts. You usually do not need these.
+            </p>
+            <div class="result-actions compact-actions">
+              <a id="role-transcript-download-link" class="ghost-button hidden" href="#" download>Role-labeled Transcript</a>
+              <a id="evidence-bank-download-link" class="ghost-button hidden" href="#" download>Evidence Bank JSON</a>
+            </div>
+          </details>
+
+          <section id="derive-weekly-panel" class="next-step-panel disabled-state">
+            <div class="section-header">
+              <div>
+                <p class="eyebrow subtle-eyebrow">Step 03</p>
+                <h3>Generate Weekly Report PPT</h3>
+                <p id="derive-weekly-copy" class="muted enhancement-copy">
+                  Available after an Interview Memo or Free Style Memo is generated.
+                </p>
+              </div>
+            </div>
+            <label class="full-width">
+              Additional weekly report materials
+              <input
+                id="derive-weekly-materials"
+                type="file"
+                multiple
+                disabled
+                accept=".pdf,.txt,.md,.json,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.webp,.gif,.bmp"
+              />
+            </label>
+            <label class="full-width">
+              Weekly report instructions
+              <textarea
+                id="derive-weekly-instructions"
+                rows="4"
+                disabled
+                placeholder="Example: emphasize why this is relevant for HMG collaboration; focus on fundraising or GTM."
+              ></textarea>
+            </label>
+            <div class="review-actions">
+              <button id="derive-weekly-button" type="button" class="primary-action" disabled>
+                Generate Weekly Report PPT
+              </button>
+              <a id="weekly-report-download-link" class="download-hero hidden" href="#" download>
+                Download Weekly Report PPT
+              </a>
+              <button id="toggle-enhancement-button" type="button" class="ghost-button hidden">Enhancement</button>
+            </div>
+            <p id="derive-weekly-status" class="muted inline-status">Waiting for a memo draft.</p>
+
+            <section id="review-panel" class="review-panel hidden">
+              <div class="section-header">
+                <div>
+                  <h3>Enhancement</h3>
+                  <p class="muted enhancement-copy">Review what is already grounded and what would be added before refreshing the weekly report.</p>
+                </div>
+              </div>
+              <p id="review-summary" class="muted"></p>
+              <div id="review-items" class="review-items"></div>
+              <div class="review-actions">
+                <button id="generate-final-button" type="button" class="ghost-button">Apply Enhancement</button>
+              </div>
+            </section>
+          </section>
+
+          <div class="preview-block">
+            <h3>Output Preview</h3>
+            <pre id="result-markdown" class="code-block">Generated markdown will appear here.</pre>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="section-header">
+            <div>
+              <h2>Recent Jobs</h2>
+              <p class="muted">Recent drafts and final outputs.</p>
+            </div>
+            <button id="refresh-button" type="button" class="ghost-button">Refresh</button>
+          </div>
+          <div id="jobs-list" class="jobs-list"></div>
+        </article>
+      </section>
+    </main>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

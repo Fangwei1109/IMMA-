@@ -1,0 +1,12 @@
+{
+  "id": "interview-free-style",
+  "name": "Free Style Memo",
+  "description": "Flexible markdown memo that follows the interview's natural focus and section flow instead of forcing a full-company template.",
+  "outputType": "markdown",
+  "sectionHints": [
+    "Interview Focus",
+    "Primary Themes",
+    "Technical Deep Dive",
+    "Open Questions"
+  ]
+}
