@@ -1,4 +1,6 @@
-# Meeting Automation MVP
+# IMMA
+
+Investment Meeting Memo Automation System.
 
 Local-first meeting intelligence app for turning audio, transcripts, and supporting materials into investor-style outputs:
 
