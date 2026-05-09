@@ -35,6 +35,30 @@ Runtime files are written under `data/` and ignored by git.
 
 ## Run Locally
 
+### One-click Windows launcher
+
+Double-click:
+
+```text
+Start IMMA.bat
+```
+
+Or run:
+
+```powershell
+.\start-imma.ps1
+```
+
+The launcher creates `.env` from `.env.example` if needed, installs dependencies if `node_modules/` is missing, starts the local server, and opens [http://localhost:3100](http://localhost:3100).
+
+To stop the hidden server process:
+
+```powershell
+.\stop-imma.ps1
+```
+
+### Manual start
+
 ```powershell
 npm install
 Copy-Item .env.example .env
