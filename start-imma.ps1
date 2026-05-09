@@ -23,7 +23,7 @@ function Import-EnvFile {
 
     $name = $line.Substring(0, $separator).Trim()
     $value = $line.Substring($separator + 1).Trim().Trim('"').Trim("'")
-    if ($name) {
+    if ($name -and $value.Length -gt 0) {
       [Environment]::SetEnvironmentVariable($name, $value, "Process")
     }
   }
@@ -67,7 +67,9 @@ if (Test-ImmaHealth $healthUrl) {
 }
 
 Write-Host "Starting IMMA..."
-$process = Start-Process -FilePath "node" -ArgumentList "src/index.js" -WorkingDirectory $root -WindowStyle Hidden -PassThru
+$logPath = Join-Path $root ".imma-server.log"
+$errorLogPath = Join-Path $root ".imma-server-error.log"
+$process = Start-Process -FilePath "node" -ArgumentList "src/index.js" -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $errorLogPath -PassThru
 Set-Content -Path ".imma-server.pid" -Value $process.Id -Encoding ASCII
 
 $ready = $false

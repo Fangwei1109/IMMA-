@@ -27,6 +27,8 @@ yarn-debug.log*
 yarn-error.log*
 *.pid
 .imma-server.pid
+.imma-server.log
+.imma-server-error.log
 
 # OS / editor files
 .DS_Store

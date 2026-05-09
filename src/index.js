@@ -3,6 +3,10 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs/promises");
 const fsSync = require("fs");
+const { loadEnvFile } = require("./env");
+
+loadEnvFile();
+
 const {
   ensureAppFolders,
   deriveOutputFromJob,
