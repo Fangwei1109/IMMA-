@@ -215,6 +215,14 @@ app.post(
 });
 
 app.use((error, _req, res, _next) => {
+  const status = error.statusCode || 500;
+  const message = error.message || "Unexpected error";
+  const detail = [
+    `[${new Date().toISOString()}] ${status} ${message}`,
+    error.stack || "",
+  ].join("\n");
+  console.error(detail);
+
   if (error?.code === "LIMIT_FILE_SIZE") {
     res.status(400).json({
       error: "Uploaded file is too large. Please keep a single file under 300 MB, or split very long audio before upload.",
@@ -222,9 +230,8 @@ app.use((error, _req, res, _next) => {
     return;
   }
 
-  const status = error.statusCode || 500;
   res.status(status).json({
-    error: error.message || "Unexpected error",
+    error: message,
   });
 });
 

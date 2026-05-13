@@ -25,7 +25,7 @@ function getLlmProviders() {
         id: "deepseek",
         label: "DeepSeek",
         configured: Boolean(readEnv("DEEPSEEK_API_KEY")),
-        model: readEnv("DEEPSEEK_MODEL") || "deepseek-v4-pro",
+        model: readEnv("DEEPSEEK_MODEL") || "deepseek-v4-flash",
       },
       {
         id: "ali",
@@ -79,7 +79,7 @@ function getResolvedLlmConfig(requestedProvider = "auto") {
       providerId,
       apiKey: readEnv("DEEPSEEK_API_KEY"),
       baseUrl: readEnv("DEEPSEEK_BASE_URL") || DEFAULT_DEEPSEEK_BASE_URL,
-      model: readEnv("DEEPSEEK_MODEL") || "deepseek-v4-pro",
+      model: readEnv("DEEPSEEK_MODEL") || "deepseek-v4-flash",
     };
   }
 

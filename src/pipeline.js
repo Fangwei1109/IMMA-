@@ -26,6 +26,12 @@ const ROOT = path.join(__dirname, "..");
 const TEMPLATES_DIR = path.join(ROOT, "templates");
 const SCRIPTS_DIR = path.join(ROOT, "scripts");
 const storage = getStorageAdapter();
+const JOB_LIST_LIMIT = Number(process.env.JOB_LIST_LIMIT || 50);
+const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 120000);
+const LLM_INPUT_CHAR_LIMIT = Number(process.env.LLM_INPUT_CHAR_LIMIT || 18000);
+const ROLE_LABEL_CHAR_LIMIT = Number(process.env.ROLE_LABEL_CHAR_LIMIT || 12000);
+const ROLE_LABEL_SKIP_CHAR_LIMIT = Number(process.env.ROLE_LABEL_SKIP_CHAR_LIMIT || 20000);
+const ENABLE_LLM_ROLE_LABELING = String(process.env.ENABLE_LLM_ROLE_LABELING || "").toLowerCase() === "true";
 
 async function ensureAppFolders() {
   await storage.ensureFolders();
@@ -37,15 +43,138 @@ async function listJobs() {
   const jobs = await Promise.all(
     files
       .filter((file) => file.endsWith(".json"))
+      .sort((a, b) => (a < b ? 1 : -1))
+      .slice(0, JOB_LIST_LIMIT)
       .map(async (file) => {
         const raw = await storage.readStructuredRecord(file);
-        return normalizeStoredJob(JSON.parse(raw), file);
+        return normalizeJobListItem(JSON.parse(raw), file);
       }),
   );
 
   return jobs
     .filter((job) => job?.job?.createdAt)
     .sort((a, b) => (a.job.createdAt < b.job.createdAt ? 1 : -1));
+}
+
+function normalizeJobListItem(record, fileName = "") {
+  if (record?.job?.id) {
+    return {
+      job: {
+        id: record.job.id,
+        createdAt: record.job.createdAt,
+        title: record.job.title || "Untitled meeting",
+        company: record.job.company || "Unknown company",
+        templateId: record.job.templateId || record.structured?.processing?.templateId || "interview-knowledge-base",
+        templateName: record.job.templateName || "Interview Memo",
+        summary: record.job.summary || record.structured?.summary?.oneSentence || "",
+        modelMode: record.job.modelMode || record.structured?.processing?.modelMode || "unknown",
+        llmProvider: record.job.llmProvider || record.structured?.processing?.llmProvider || "none",
+        sourceType: record.job.sourceType || record.structured?.processing?.sourceType || "missing",
+        asrProvider: record.job.asrProvider || record.structured?.processing?.asrProvider || "manual",
+        researchProvider: record.job.researchProvider || record.structured?.processing?.researchProvider || "none",
+        transcriptPath: record.job.transcriptPath || "",
+        markdownPath: record.job.markdownPath || "",
+        pptPath: record.job.pptPath || null,
+        structuredPath: record.job.structuredPath || storage.getStructuredPath(`${record.job.id}.json`),
+      },
+    };
+  }
+
+  const structured = record || {};
+  const structuredId = structured.id || path.basename(fileName, ".json");
+  const processing = structured.processing || {};
+  const meta = structured.meeting?.meta || {};
+  const templateId = processing.templateId || "interview-knowledge-base";
+  return {
+    job: {
+      id: structuredId,
+      createdAt: structured.createdAt || inferCreatedAtFromFileName(fileName),
+      title: meta.title || "Untitled meeting",
+      company: meta.company || "Unknown company",
+      templateId,
+      templateName: processing.templateName || templateId,
+      summary: structured.summary?.oneSentence || "",
+      modelMode: processing.modelMode || "unknown",
+      llmProvider: processing.llmProvider || "none",
+      sourceType: processing.sourceType || "missing",
+      asrProvider: processing.asrProvider || "manual",
+      researchProvider: processing.researchProvider || "none",
+      transcriptPath: meta.transcriptPath || "",
+      markdownPath: storage.getOutputPath(`${structuredId}.md`),
+      pptPath: ["weekly-report", "oi-news-report"].includes(templateId)
+        ? storage.getOutputPath(`${structuredId}.pptx`)
+        : null,
+      structuredPath: storage.getStructuredPath(`${structuredId}.json`),
+    },
+  };
+}
+
+function inferCreatedAtFromFileName(fileName = "") {
+  const match = String(fileName).match(/^(\d{4}-\d{2}-\d{2}t\d{2}-\d{2}-\d{2})/i);
+  if (!match) {
+    return new Date(0).toISOString();
+  }
+
+  return `${match[1].replace("t", "T").replace(/-(\d{2})-(\d{2})$/, ":$1:$2")}Z`;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = LLM_TIMEOUT_MS) {
+  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) {
+    return fetch(url, {
+      ...options,
+      signal: options.signal || AbortSignal.timeout(timeoutMs),
+    });
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: options.signal || controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function compactTextForLLM(text, maxChars = LLM_INPUT_CHAR_LIMIT) {
+  const value = String(text || "").trim();
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  const lines = value
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const evidenceLines = lines.filter((line) =>
+    /\b(fund|financing|valuation|ipo|pre-ipo|revenue|margin|customer|contract|pilot|product|technology|model|data|architecture|roadmap|manufacturing|deployment|founder|ceo|cto|team|risk|competition)\b|融资|估值|上市|客户|收入|毛利|产品|技术|模型|数据|架构|量产|部署|创始|团队|风险/i.test(line),
+  );
+
+  const headBudget = Math.floor(maxChars * 0.34);
+  const middleBudget = Math.floor(maxChars * 0.2);
+  const tailBudget = Math.floor(maxChars * 0.26);
+  const evidenceBudget = maxChars - headBudget - middleBudget - tailBudget - 600;
+  const middleStart = Math.max(0, Math.floor(value.length / 2 - middleBudget / 2));
+
+  return [
+    `[Long source compacted from ${value.length} chars to fit the LLM request. Preserve facts from all excerpts.]`,
+    "",
+    "BEGINNING EXCERPT:",
+    value.slice(0, headBudget).trim(),
+    "",
+    "MIDDLE EXCERPT:",
+    value.slice(middleStart, middleStart + middleBudget).trim(),
+    "",
+    "ENDING EXCERPT:",
+    value.slice(Math.max(0, value.length - tailBudget)).trim(),
+    "",
+    "KEY EVIDENCE LINES:",
+    evidenceLines.join("\n").slice(0, Math.max(0, evidenceBudget)).trim(),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function readJob(jobId) {
@@ -56,6 +185,56 @@ async function readJob(jobId) {
 
 async function saveJob(job) {
   return storage.writeStructuredRecord(`${job.job.id}.json`, JSON.stringify(job, null, 2));
+}
+
+function toClientJobRecord(record) {
+  const structured = record.structured || {};
+  const inputs = record.inputs || {};
+  return {
+    ...record,
+    inputs: {
+      ...inputs,
+      transcriptText: previewText(inputs.transcriptText, 4000),
+      roleAnalysis: undefined,
+      evidenceBank: undefined,
+    },
+    structured: {
+      id: structured.id,
+      createdAt: structured.createdAt,
+      processing: structured.processing,
+      meeting: {
+        meta: structured.meeting?.meta || {},
+        transcriptPreview: previewText(structured.meeting?.transcript, 4000),
+        materialsPreview: previewText(structured.meeting?.materialsText, 3000),
+      },
+      materialInsights: structured.materialInsights,
+      summary: structured.summary,
+      sections: structured.sections,
+      actionItems: structured.actionItems,
+      risks: structured.risks,
+      quotes: structured.quotes,
+      dataPoints: structured.dataPoints,
+      fundingTable: structured.fundingTable,
+      uncategorized: structured.uncategorized,
+      fundraisingNotes: structured.fundraisingNotes,
+      weeklyReportDraft: structured.weeklyReportDraft,
+      oiNewsDraft: structured.oiNewsDraft,
+      focusProfile: structured.focusProfile,
+      templateRecommendation: structured.templateRecommendation,
+      renderChecks: structured.renderChecks,
+      provenance: structured.provenance,
+      research: structured.research,
+    },
+  };
+}
+
+function previewText(value, maxChars = 4000) {
+  const text = String(value || "");
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  return `${text.slice(0, maxChars).trim()}\n\n[Preview truncated. Use the download links for the full artifact.]`;
 }
 
 function normalizeStoredJob(record, fileName = "") {
@@ -358,9 +537,7 @@ async function createDraftJob(payload) {
   jobRecord.job.structuredPath = structuredPath;
   await saveJob(jobRecord);
 
-  return {
-    ...jobRecord,
-  };
+  return toClientJobRecord(jobRecord);
 }
 
 async function resolveTranscript({ title, company, audioFile, transcriptFile, transcriptText, slug, asrProvider, userInstructions }) {
@@ -627,7 +804,12 @@ async function buildStructuredMeeting({
     llmProvider,
     userInstructions,
     terminologyHints,
-  });
+  }).catch((error) => ({
+    providerId: resolveLlmProvider(llmProvider),
+    structured: null,
+    error: error.message || "LLM extraction failed.",
+  }));
+  const llmSucceeded = Boolean(llmResult?.structured);
 
   const extracted = normalizeExtractedPayload(
     llmResult?.structured || fallbackExtraction(sourcePacket, template),
@@ -640,8 +822,9 @@ async function buildStructuredMeeting({
     processing: {
       templateId: template.id,
       templateName: template.name,
-      modelMode: llmResult ? "llm" : "fallback",
+      modelMode: llmSucceeded ? "llm" : "fallback",
       llmProvider: llmResult?.providerId || resolveLlmProvider(llmProvider),
+      llmError: llmSucceeded ? "" : llmResult?.error || "",
       sourceType,
       asrProvider,
       researchProvider: resolveResearchProvider(researchProvider),
@@ -757,6 +940,15 @@ async function buildRoleAwareTranscript({ title, company, transcriptText, llmPro
     return createFallbackRoleAnalysis("", []);
   }
 
+  const fallbackTranscript =
+    cleanedTranscript.length > ROLE_LABEL_SKIP_CHAR_LIMIT
+      ? compactTextForLLM(cleanedTranscript, LLM_INPUT_CHAR_LIMIT)
+      : cleanedTranscript;
+
+  if (!ENABLE_LLM_ROLE_LABELING || cleanedTranscript.length > ROLE_LABEL_SKIP_CHAR_LIMIT) {
+    return createFallbackRoleAnalysis(fallbackTranscript, splitIntoMemoSentences(fallbackTranscript));
+  }
+
   const llmAnalysis = await tryLLMRoleAnalysis({
     title,
     company,
@@ -765,7 +957,7 @@ async function buildRoleAwareTranscript({ title, company, transcriptText, llmPro
     userInstructions,
   }).catch(() => null);
 
-  return normalizeRoleAnalysis(llmAnalysis, cleanedTranscript);
+  return normalizeRoleAnalysis(llmAnalysis, llmAnalysis ? cleanedTranscript : fallbackTranscript);
 }
 
 async function tryLLMRoleAnalysis({ title, company, transcriptText, llmProvider, userInstructions }) {
@@ -804,10 +996,10 @@ async function tryLLMRoleAnalysis({ title, company, transcriptText, llmProvider,
     }),
     "",
     "Transcript:",
-    transcriptText,
+    compactTextForLLM(transcriptText, ROLE_LABEL_CHAR_LIMIT),
   ].join("\n");
 
-  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
@@ -816,7 +1008,7 @@ async function tryLLMRoleAnalysis({ title, company, transcriptText, llmProvider,
     body: JSON.stringify({
       model: config.model,
       temperature: 0.1,
-      response_format: { type: "json_object" },
+      ...jsonResponseFormatForProvider(config.providerId),
       messages: [
         {
           role: "system",
@@ -840,7 +1032,7 @@ async function tryLLMRoleAnalysis({ title, company, transcriptText, llmProvider,
     return null;
   }
 
-  return JSON.parse(content);
+  return parseJsonContent(content);
 }
 
 function normalizeRoleAnalysis(rawAnalysis, transcriptText) {
@@ -1654,7 +1846,7 @@ async function finalizeJob(jobId, { selectedEnrichmentFields = [], llmProvider, 
   };
 
   await saveJob(updatedRecord);
-  return updatedRecord;
+  return toClientJobRecord(updatedRecord);
 }
 
 async function deriveOutputFromJob(jobId, { targetTemplateId = "weekly-report", materialFiles = [], notesText = "", userInstructions = "", llmProvider, researchProvider = "none" }) {
@@ -1795,7 +1987,7 @@ async function deriveOutputFromJob(jobId, { targetTemplateId = "weekly-report", 
   const structuredPath = await saveJob(jobRecord);
   jobRecord.job.structuredPath = structuredPath;
   await saveJob(jobRecord);
-  return jobRecord;
+  return toClientJobRecord(jobRecord);
 }
 
 function renderEvidenceBankForPrompt(evidenceBank) {
@@ -2778,6 +2970,16 @@ function firstRegexMatch(text, regex) {
   return match?.[0] || "";
 }
 
+function jsonResponseFormatForProvider(providerId) {
+  if (providerId === "deepseek") {
+    return {};
+  }
+
+  return {
+    response_format: { type: "json_object" },
+  };
+}
+
 async function tryLLMExtraction({
   title,
   company,
@@ -2800,13 +3002,13 @@ async function tryLLMExtraction({
     company,
     meetingType,
     participants,
-    transcriptText,
+    transcriptText: compactTextForLLM(transcriptText, LLM_INPUT_CHAR_LIMIT),
     template,
     userInstructions,
     terminologyHints,
   });
 
-  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+  const response = await fetchWithTimeout(`${config.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
@@ -2815,7 +3017,7 @@ async function tryLLMExtraction({
     body: JSON.stringify({
       model: config.model,
       temperature: 0.2,
-      response_format: { type: "json_object" },
+      ...jsonResponseFormatForProvider(config.providerId),
       messages: [
         {
           role: "system",
@@ -2844,8 +3046,28 @@ async function tryLLMExtraction({
 
   return {
     providerId: config.providerId,
-    structured: JSON.parse(content),
+    structured: parseJsonContent(content),
   };
+}
+
+function parseJsonContent(content) {
+  const raw = String(content || "").trim();
+  if (!raw) {
+    throw new Error("LLM returned an empty response.");
+  }
+
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced?.[1] || raw).trim();
+  try {
+    return JSON.parse(candidate);
+  } catch (_error) {
+    const start = candidate.indexOf("{");
+    const end = candidate.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(candidate.slice(start, end + 1));
+    }
+    throw _error;
+  }
 }
 
 function buildExtractionPrompt({ title, company, meetingType, participants, transcriptText, template, userInstructions, terminologyHints = [] }) {
@@ -5276,7 +5498,12 @@ function sanitizeText(value, fallback = "") {
 }
 
 function sanitizeFileName(value) {
-  return value.replace(/[^a-zA-Z0-9._-]+/g, "_");
+  const safe = String(value || "file")
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "file";
+  const extension = path.extname(safe).slice(0, 12);
+  const base = path.basename(safe, extension).slice(0, 70).replace(/[._-]+$/g, "") || "file";
+  return `${base}${extension}`;
 }
 
 function splitParticipants(value) {
