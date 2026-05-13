@@ -73,13 +73,16 @@ Set provider keys in your shell or in a local `.env` file. Do not commit real ke
 
 ### LLM
 
+- `DEEPSEEK_API_KEY`: DeepSeek-compatible chat completions
+- `DEEPSEEK_MODEL`: default `deepseek-v4-pro`
+- `DEEPSEEK_BASE_URL`: default `https://api.deepseek.com`
 - `ALI_API_KEY`: Alibaba / Qwen-compatible chat completions
 - `ALI_MODEL`: default `qwen-plus`
 - `ALI_BASE_URL`: default `https://dashscope.aliyuncs.com/compatible-mode/v1`
 - `OPENAI_API_KEY`: optional OpenAI provider
 - `OPENAI_MODEL`: optional OpenAI model
 
-The UI supports `auto`, `ali`, `openai`, and `none`. `auto` prefers OpenAI when configured, then Alibaba, then rule-based fallback.
+The UI supports `auto`, `deepseek`, `ali`, `openai`, and `none`. `auto` prefers DeepSeek when configured, then OpenAI, then Alibaba, then rule-based fallback.
 
 ### ASR
 

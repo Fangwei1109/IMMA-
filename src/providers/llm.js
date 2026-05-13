@@ -1,4 +1,5 @@
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_ALI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
 function readEnv(name) {
@@ -21,6 +22,12 @@ function getLlmProviders() {
         model: readEnv("OPENAI_MODEL") || "gpt-4.1-mini",
       },
       {
+        id: "deepseek",
+        label: "DeepSeek",
+        configured: Boolean(readEnv("DEEPSEEK_API_KEY")),
+        model: readEnv("DEEPSEEK_MODEL") || "deepseek-v4-pro",
+      },
+      {
         id: "ali",
         label: "Ali / Qwen",
         configured: Boolean(readEnv("ALI_API_KEY")),
@@ -38,6 +45,10 @@ function getLlmProviders() {
 function resolveLlmProvider(requestedProvider = "auto") {
   if (requestedProvider && requestedProvider !== "auto") {
     return requestedProvider;
+  }
+
+  if (readEnv("DEEPSEEK_API_KEY")) {
+    return "deepseek";
   }
 
   if (readEnv("OPENAI_API_KEY")) {
@@ -60,6 +71,15 @@ function getResolvedLlmConfig(requestedProvider = "auto") {
       apiKey: readEnv("OPENAI_API_KEY"),
       baseUrl: readEnv("OPENAI_BASE_URL") || DEFAULT_OPENAI_BASE_URL,
       model: readEnv("OPENAI_MODEL") || "gpt-4.1-mini",
+    };
+  }
+
+  if (providerId === "deepseek") {
+    return {
+      providerId,
+      apiKey: readEnv("DEEPSEEK_API_KEY"),
+      baseUrl: readEnv("DEEPSEEK_BASE_URL") || DEFAULT_DEEPSEEK_BASE_URL,
+      model: readEnv("DEEPSEEK_MODEL") || "deepseek-v4-pro",
     };
   }
 
