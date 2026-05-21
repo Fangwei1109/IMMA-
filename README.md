@@ -88,6 +88,7 @@ The UI supports `auto`, `deepseek`, `ali`, `openai`, and `none`. `auto` prefers 
 
 - `ALI_API_KEY`: also used by Alibaba Qwen ASR
 - `ALI_ASR_MODEL`: default `qwen3-asr-flash`
+- `PDF_TEXT_PYTHON`: optional Python executable for PDF transcript extraction fallback. Defaults to `python` and uses PyMuPDF when available.
 - `WHISPER_API_KEY`: optional OpenAI-compatible Whisper endpoint
 - `LOCAL_WHISPER_MODEL`: optional local Whisper model name
 

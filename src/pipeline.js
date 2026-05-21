@@ -1,7 +1,8 @@
 const path = require("path");
 const fs = require("fs/promises");
+const os = require("os");
 const crypto = require("crypto");
-const pdfParse = require("pdf-parse");
+const { PDFParse } = require("pdf-parse");
 const { spawn } = require("child_process");
 const iconv = require("iconv-lite");
 const mammoth = require("mammoth");
@@ -32,6 +33,7 @@ const LLM_INPUT_CHAR_LIMIT = Number(process.env.LLM_INPUT_CHAR_LIMIT || 18000);
 const ROLE_LABEL_CHAR_LIMIT = Number(process.env.ROLE_LABEL_CHAR_LIMIT || 12000);
 const ROLE_LABEL_SKIP_CHAR_LIMIT = Number(process.env.ROLE_LABEL_SKIP_CHAR_LIMIT || 20000);
 const ENABLE_LLM_ROLE_LABELING = String(process.env.ENABLE_LLM_ROLE_LABELING || "").toLowerCase() === "true";
+const PDF_TEXT_PYTHON = process.env.PDF_TEXT_PYTHON || process.env.LOCAL_WHISPER_PYTHON || "python";
 
 async function ensureAppFolders() {
   await storage.ensureFolders();
@@ -652,11 +654,11 @@ async function extractMaterialText(materialFile, llmProvider) {
   const fileName = (materialFile.originalname || "").toLowerCase();
 
   if (mimeType === "application/pdf" || fileName.endsWith(".pdf")) {
-    const parsed = await pdfParse(materialFile.buffer);
+    const text = await extractPdfText(materialFile.buffer);
     return {
-      text: parsed.text?.trim() || "",
+      text,
       method: "pdf-parse",
-      insights: deriveMaterialInsightsFromText(parsed.text?.trim() || ""),
+      insights: deriveMaterialInsightsFromText(text),
     };
   }
 
@@ -750,6 +752,44 @@ async function extractMaterialText(materialFile, llmProvider) {
     method: "unsupported",
     insights: createEmptyMaterialInsights(),
   };
+}
+
+async function extractPdfText(buffer) {
+  const pythonText = await extractPdfTextWithPython(buffer).catch(() => "");
+  if (pythonText) {
+    return pythonText;
+  }
+
+  const parser = new PDFParse({ data: buffer });
+  let parsedText = "";
+  try {
+    const parsed = await parser.getText();
+    parsedText = cleanExtractedPdfText(parsed.text || "");
+  } finally {
+    await parser.destroy().catch(() => {});
+  }
+
+  return parsedText;
+}
+
+async function extractPdfTextWithPython(buffer) {
+  const tempPath = path.join(os.tmpdir(), `imma-pdf-${crypto.randomUUID()}.pdf`);
+  await fs.writeFile(tempPath, buffer);
+  try {
+    const output = await runCaptureProcess(PDF_TEXT_PYTHON, [path.join(SCRIPTS_DIR, "extract_pdf_text.py"), tempPath]);
+    return cleanExtractedPdfText(output);
+  } finally {
+    await fs.unlink(tempPath).catch(() => {});
+  }
+}
+
+function cleanExtractedPdfText(text) {
+  return String(text || "")
+    .replace(/\u200b/g, "")
+    .replace(/\u0001/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 async function buildStructuredMeeting({
@@ -2207,6 +2247,28 @@ async function runPowerShellScript(scriptPath, args) {
       }
 
       reject(createError(500, `PPT rendering failed: ${stderr || `exit code ${code}`}`));
+    });
+  });
+}
+
+async function runCaptureProcess(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(stdout).toString("utf8"));
+        return;
+      }
+
+      reject(createError(500, `${command} failed: ${Buffer.concat(stderr).toString("utf8") || `exit code ${code}`}`));
     });
   });
 }
