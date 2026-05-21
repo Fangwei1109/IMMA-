@@ -31,6 +31,8 @@ const JOB_LIST_LIMIT = Number(process.env.JOB_LIST_LIMIT || 50);
 const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 120000);
 const LLM_INPUT_CHAR_LIMIT = Number(process.env.LLM_INPUT_CHAR_LIMIT || 18000);
 const INTERVIEW_MEMO_INPUT_CHAR_LIMIT = Number(process.env.INTERVIEW_MEMO_INPUT_CHAR_LIMIT || 60000);
+const INTERVIEW_MEMO_MIN_EFFECTIVE_RATIO = Number(process.env.INTERVIEW_MEMO_MIN_EFFECTIVE_RATIO || 0.3);
+const INTERVIEW_MEMO_MAX_BACKFILL_LINES = Number(process.env.INTERVIEW_MEMO_MAX_BACKFILL_LINES || 80);
 const ROLE_LABEL_CHAR_LIMIT = Number(process.env.ROLE_LABEL_CHAR_LIMIT || 12000);
 const ROLE_LABEL_SKIP_CHAR_LIMIT = Number(process.env.ROLE_LABEL_SKIP_CHAR_LIMIT || 20000);
 const ENABLE_LLM_ROLE_LABELING = String(process.env.ENABLE_LLM_ROLE_LABELING || "").toLowerCase() === "true";
@@ -4249,7 +4251,266 @@ function buildLlmMemoCategorySections(structured) {
     }
   }
 
+  return backfillMemoSectionsFromTranscript(structured, sections);
+}
+
+function backfillMemoSectionsFromTranscript(structured, sections) {
+  const transcript = structured.meeting?.transcript || "";
+  const transcriptEffectiveLength = effectiveMemoTextLength(transcript);
+  if (!transcriptEffectiveLength || !sections.length) {
+    return sections;
+  }
+
+  const currentEffectiveLength = effectiveMemoTextLength(
+    sections
+      .flatMap((section) => section.groups)
+      .flatMap((group) => [...group.lines, ...group.quotes])
+      .join("\n"),
+  );
+  const currentRatio = currentEffectiveLength / transcriptEffectiveLength;
+  if (currentRatio >= INTERVIEW_MEMO_MIN_EFFECTIVE_RATIO) {
+    return sections;
+  }
+
+  const targetLength = Math.floor(transcriptEffectiveLength * INTERVIEW_MEMO_MIN_EFFECTIVE_RATIO);
+  const existingText = cleanGeneratedText(
+    sections
+      .flatMap((section) => [section.title, ...section.groups.flatMap((group) => [group.title, ...group.lines, ...group.quotes])])
+      .join("\n"),
+  ).toLowerCase();
+  const backfillLines = extractBackfillMemoLines(transcript, existingText, targetLength - currentEffectiveLength);
+  if (!backfillLines.length) {
+    return sections;
+  }
+
+  backfillLines.forEach((line) => {
+    const placement = findMemoBackfillPlacement(sections, line);
+    const section = placement.section || ensureBackfillSection(sections);
+    const group = placement.group || ensureBackfillGroup(section, deriveBackfillGroupTitle(line));
+    group.lines.push(line);
+  });
+
   return sections;
+}
+
+function effectiveMemoTextLength(value) {
+  return String(value || "")
+    .replace(/^---[\s\S]*?---\s*/, "")
+    .replace(/<details>[\s\S]*?<\/details>/g, "")
+    .replace(/\s/g, "")
+    .length;
+}
+
+function extractBackfillMemoLines(transcript, existingText, targetAdditionalLength) {
+  const seen = new Set();
+  const candidates = splitIntoBackfillMemoUnits(transcript)
+    .map((line) => normalizeMemoSectionLine(line))
+    .filter((line) => isUsefulMemoBackfillLine(line))
+    .filter((line) => {
+      const key = cleanGeneratedText(line).toLowerCase();
+      if (!key || seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      if (existingText.includes(key) || key.length < 18) {
+        return false;
+      }
+      const compactKey = key.slice(0, Math.min(32, key.length));
+      return !existingText.includes(compactKey);
+    });
+
+  const selected = [];
+  let addedLength = 0;
+  for (const line of candidates) {
+    selected.push(line);
+    addedLength += effectiveMemoTextLength(line);
+    if (selected.length >= INTERVIEW_MEMO_MAX_BACKFILL_LINES || addedLength >= targetAdditionalLength) {
+      break;
+    }
+  }
+
+  return selected;
+}
+
+function isUsefulMemoBackfillLine(line) {
+  const text = cleanGeneratedText(line);
+  if (text.length < 24 || text.length > 260 || looksLikeMostlyTranscriptGarbage(text) || isStrictMemoActionItem(text)) {
+    return false;
+  }
+
+  if (/^(Keywords|Transcript|GENROBOT AI|Meeting|Source)\b/i.test(text)) {
+    return false;
+  }
+
+  if (/^(话|型|们|建|据|望|在|断|够|只是|是一个东西|的模态|之后|Data acquisition system)/.test(text)) {
+    return false;
+  }
+
+  if (/(skin load|sentry|声音\s*load|The shipping|uploaded)/i.test(text)) {
+    return false;
+  }
+
+  if (!/[。！？!?]$/.test(text) && /[但我你他她它这那的了和与把将构装模设不]$/.test(text)) {
+    return false;
+  }
+
+  return /数据|模型|模态|采集|硬件|传感器|视觉|触觉|评测|机器人|客户|收入|价格|融资|估值|股东|团队|创始|合规|海外|开源|小时|场景|精度|延迟|SLAM|VLA|VLM|world model|foundation model|customer|revenue|pricing|valuation|funding|sensor|hardware|robot|model|data/i.test(
+    text,
+  );
+}
+
+function splitIntoBackfillMemoUnits(text) {
+  const allLines = String(text || "")
+    .split(/\r?\n+/)
+    .map((line) => normalizeMemoSectionLine(line))
+    .filter(Boolean)
+    .filter((line) => !/^(GENROBOT AI|Meeting|Source)\b/i.test(line));
+  const transcriptMarkerIndex = allLines.findIndex((line) => /^Transcript:?$/i.test(line));
+  const rawLines = (transcriptMarkerIndex >= 0 ? allLines.slice(transcriptMarkerIndex + 1) : allLines)
+    .filter((line) => !/^(Keywords?|Transcript):?$/i.test(line))
+    .filter((line) => !/^\d{4}年\d{1,2}月\d{1,2}日|^\d+\s*小时|硬件\s+模态\s+机器人|key milestone|商业模式\s+技术路线\s+训练数据/i.test(line));
+
+  const units = [];
+  let buffer = "";
+  rawLines.forEach((line) => {
+    if (!buffer) {
+      buffer = line;
+    } else if (shouldJoinBackfillLine(buffer, line)) {
+      buffer = `${buffer}${line}`;
+    } else {
+      units.push(buffer);
+      buffer = line;
+    }
+
+    if (/[。！？!?]$/.test(buffer) || buffer.length >= 220) {
+      units.push(buffer);
+      buffer = "";
+    }
+  });
+  if (buffer) {
+    units.push(buffer);
+  }
+
+  return units
+    .flatMap((unit) => splitLongBackfillUnit(unit))
+    .map((unit) => unit.trim())
+    .filter(Boolean);
+}
+
+function shouldJoinBackfillLine(previous, next) {
+  if (/[。！？!?]$/.test(previous)) {
+    return false;
+  }
+  if (/^[-*•]|\d+[.)]/.test(next)) {
+    return false;
+  }
+  if (/^[A-Z][A-Za-z\s]{0,30}:$/.test(next)) {
+    return false;
+  }
+  return previous.length < 180;
+}
+
+function splitLongBackfillUnit(unit) {
+  const text = String(unit || "").trim();
+  if (text.length <= 260) {
+    return [text];
+  }
+
+  const parts = text
+    .split(/(?<=[。！？!?])/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (parts.length <= 1) {
+    return [];
+  }
+
+  const chunks = [];
+  let buffer = "";
+  parts.forEach((part) => {
+    if (!buffer) {
+      buffer = part;
+    } else if ((buffer + part).length <= 240) {
+      buffer += part;
+    } else {
+      chunks.push(buffer);
+      buffer = part;
+    }
+  });
+  if (buffer) {
+    chunks.push(buffer);
+  }
+  return chunks;
+}
+
+function findMemoBackfillPlacement(sections, line) {
+  const lineWords = significantMemoWords(line);
+  let best = { section: null, group: null, score: 0 };
+  sections.forEach((section) => {
+    section.groups.forEach((group) => {
+      const groupText = cleanGeneratedText([section.title, group.title, ...group.lines].join(" ")).toLowerCase();
+      const score = lineWords.filter((word) => groupText.includes(word)).length;
+      if (score > best.score) {
+        best = { section, group, score };
+      }
+    });
+  });
+
+  if (best.score >= 2) {
+    return best;
+  }
+
+  const title = deriveBackfillSectionTitle(line);
+  const section =
+    sections.find((item) => cleanGeneratedText(item.title).toLowerCase() === cleanGeneratedText(title).toLowerCase()) ||
+    ensureBackfillSection(sections, title);
+  return { section, group: ensureBackfillGroup(section, deriveBackfillGroupTitle(line)) };
+}
+
+function ensureBackfillSection(sections, title = "补充细节") {
+  let section = sections.find((item) => item.title === title);
+  if (!section) {
+    section = {
+      key: "backfill",
+      title,
+      groups: [],
+      fundraisingRows: [],
+      fundraisingNotes: [],
+      shouldRenderFundingSnapshot: false,
+    };
+    sections.push(section);
+  }
+  return section;
+}
+
+function ensureBackfillGroup(section, title) {
+  const normalized = cleanGeneratedText(title).toLowerCase();
+  let group = section.groups.find((item) => cleanGeneratedText(item.title).toLowerCase() === normalized);
+  if (!group) {
+    group = { title, lines: [], quotes: [] };
+    section.groups.push(group);
+  }
+  return group;
+}
+
+function deriveBackfillSectionTitle(line) {
+  if (/融资|估值|股东|收入|价格|客户|商业|开源|海外|合规|funding|valuation|revenue|pricing|customer/i.test(line)) {
+    return "商业化、融资与治理补充";
+  }
+  if (/团队|创始|CEO|负责人|小鹏|大疆|腾讯|Momentum|team|founder/i.test(line)) {
+    return "团队与组织补充";
+  }
+  return "技术与数据细节补充";
+}
+
+function deriveBackfillGroupTitle(line) {
+  if (/世界模型|人类模态|第一人称|Benchmark|VLA|VLM/i.test(line)) return "世界模型与人类模态";
+  if (/采集|传感器|硬件|摄像头|手套|Eagle|Gripper|IMU|编码器|SLAM/i.test(line)) return "采集硬件与传感器";
+  if (/标注|管线|Data Foundation|SSP|处理|利用率|数据平台/i.test(line)) return "数据平台与处理";
+  if (/评测|机器人|成功率|闭环|5000|200台/i.test(line)) return "评测闭环";
+  if (/客户|价格|收入|开源|商业|海外|合规/i.test(line)) return "商业化与客户";
+  if (/融资|估值|股东|国资|主体|Pre|Post/i.test(line)) return "融资与治理";
+  if (/团队|创始|CEO|负责人|背景/i.test(line)) return "团队背景";
+  return "原文补充";
 }
 
 function sanitizeMemoCategoryLines(lines, limit = 80) {
