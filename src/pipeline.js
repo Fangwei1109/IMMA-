@@ -4455,15 +4455,77 @@ function findMemoBackfillPlacement(sections, line) {
     });
   });
 
-  if (best.score >= 2) {
+  if (best.score >= 1) {
     return best;
   }
 
-  const title = deriveBackfillSectionTitle(line);
-  const section =
-    sections.find((item) => cleanGeneratedText(item.title).toLowerCase() === cleanGeneratedText(title).toLowerCase()) ||
-    ensureBackfillSection(sections, title);
-  return { section, group: ensureBackfillGroup(section, deriveBackfillGroupTitle(line)) };
+  const groupTitle = deriveBackfillGroupTitle(line);
+  const existingGroupPlacement = findExistingGroupByTitle(sections, groupTitle);
+  if (existingGroupPlacement.group) {
+    return existingGroupPlacement;
+  }
+
+  const section = findExistingSectionForBackfill(sections, line) || ensureBackfillSection(sections);
+  return { section, group: ensureBackfillGroup(section, groupTitle) };
+}
+
+function findExistingGroupByTitle(sections, groupTitle) {
+  const normalized = cleanGeneratedText(groupTitle).toLowerCase();
+  for (const section of sections) {
+    if (section.key === "backfill" || /补充/.test(section.title || "")) {
+      continue;
+    }
+    const group = section.groups.find((item) => cleanGeneratedText(item.title).toLowerCase() === normalized);
+    if (group) {
+      return { section, group, score: 1 };
+    }
+  }
+  return { section: null, group: null, score: 0 };
+}
+
+function findExistingSectionForBackfill(sections, line) {
+  const candidates = sections.filter((section) => section.key !== "backfill" && !/补充/.test(section.title || ""));
+  if (!candidates.length) {
+    return null;
+  }
+
+  const lineText = cleanGeneratedText(line).toLowerCase();
+  const lineWords = significantMemoWords(line);
+  let best = { section: null, score: 0 };
+
+  candidates.forEach((section) => {
+    const sectionText = cleanGeneratedText(
+      [section.title, ...section.groups.flatMap((group) => [group.title, ...group.lines.slice(0, 3)])].join(" "),
+    ).toLowerCase();
+    const wordOverlap = lineWords.filter((word) => sectionText.includes(word)).length;
+    const categoryBoost = memoBackfillCategoryMatchesSection(lineText, section.title) ? 2 : 0;
+    const score = wordOverlap + categoryBoost;
+    if (score > best.score) {
+      best = { section, score };
+    }
+  });
+
+  return best.score > 0 ? best.section : null;
+}
+
+function memoBackfillCategoryMatchesSection(lineText, sectionTitle) {
+  const title = cleanGeneratedText(sectionTitle).toLowerCase();
+  if (/融资|估值|股东|收入|价格|客户|商业|开源|海外|合规|funding|valuation|revenue|pricing|customer/.test(lineText)) {
+    return /商业|客户|融资|治理|收入|价格|开源|海外|合规|commercial|customer|fund|financ|valuation/i.test(title);
+  }
+  if (/团队|创始|CEO|负责人|小鹏|大疆|腾讯|Momentum|team|founder/.test(lineText)) {
+    return /团队|创始|组织|背景|team|founder|organization/i.test(title);
+  }
+  if (/评测|机器人|成功率|闭环|5000|200台/.test(lineText)) {
+    return /评测|闭环|机器人|质量|validation|evaluation/i.test(title);
+  }
+  if (/采集|传感器|硬件|摄像头|手套|eagle|gripper|imu|编码器|slam/.test(lineText)) {
+    return /硬件|采集|同步|技术|产品|hardware|sensor|collection/i.test(title);
+  }
+  if (/世界模型|人类模态|第一人称|Benchmark|VLA|VLM|数据|模型|模态/.test(lineText)) {
+    return /世界模型|人类模态|数据|模型|技术|路线|platform|model|data|technology/i.test(title);
+  }
+  return false;
 }
 
 function ensureBackfillSection(sections, title = "补充细节") {
