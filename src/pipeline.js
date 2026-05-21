@@ -30,6 +30,7 @@ const storage = getStorageAdapter();
 const JOB_LIST_LIMIT = Number(process.env.JOB_LIST_LIMIT || 50);
 const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 120000);
 const LLM_INPUT_CHAR_LIMIT = Number(process.env.LLM_INPUT_CHAR_LIMIT || 18000);
+const INTERVIEW_MEMO_INPUT_CHAR_LIMIT = Number(process.env.INTERVIEW_MEMO_INPUT_CHAR_LIMIT || 60000);
 const ROLE_LABEL_CHAR_LIMIT = Number(process.env.ROLE_LABEL_CHAR_LIMIT || 12000);
 const ROLE_LABEL_SKIP_CHAR_LIMIT = Number(process.env.ROLE_LABEL_SKIP_CHAR_LIMIT || 20000);
 const ENABLE_LLM_ROLE_LABELING = String(process.env.ENABLE_LLM_ROLE_LABELING || "").toLowerCase() === "true";
@@ -212,6 +213,7 @@ function toClientJobRecord(record) {
       materialInsights: structured.materialInsights,
       summary: structured.summary,
       sections: structured.sections,
+      memoCategories: structured.memoCategories,
       actionItems: structured.actionItems,
       risks: structured.risks,
       quotes: structured.quotes,
@@ -833,7 +835,12 @@ async function buildStructuredMeeting({
     researchProvider,
     selectedEnrichmentFields,
   });
-  const sourcePacket = buildSourcePacket({ transcriptText, materialText, research, roleAnalysis });
+  const sourcePacket = buildSourcePacket({
+    transcriptText,
+    materialText,
+    research,
+    roleAnalysis: isInterviewMemoTemplate(template.id) ? null : roleAnalysis,
+  });
   const llmResult = await tryLLMExtraction({
     title,
     company,
@@ -898,6 +905,7 @@ async function buildStructuredMeeting({
       executiveSummary: extracted.executiveSummary || extracted.paragraphSummary || "",
     },
     sections: extracted.sections || [],
+    memoCategories: extracted.memoCategories || [],
     actionItems: extracted.actionItems || [],
     risks: extracted.risks || [],
     quotes: extracted.quotes || [],
@@ -980,10 +988,7 @@ async function buildRoleAwareTranscript({ title, company, transcriptText, llmPro
     return createFallbackRoleAnalysis("", []);
   }
 
-  const fallbackTranscript =
-    cleanedTranscript.length > ROLE_LABEL_SKIP_CHAR_LIMIT
-      ? compactTextForLLM(cleanedTranscript, LLM_INPUT_CHAR_LIMIT)
-      : cleanedTranscript;
+  const fallbackTranscript = cleanedTranscript;
 
   if (!ENABLE_LLM_ROLE_LABELING || cleanedTranscript.length > ROLE_LABEL_SKIP_CHAR_LIMIT) {
     return createFallbackRoleAnalysis(fallbackTranscript, splitIntoMemoSentences(fallbackTranscript));
@@ -2659,6 +2664,7 @@ function normalizeExtractedPayload(extracted, templateId) {
   const normalized = extracted && typeof extracted === "object" ? extracted : {};
 
   const sections = normalizeSections(normalized.sections);
+  const memoCategories = normalizeMemoCategories(normalized.memoCategories);
   const actionItems = sanitizeOutputLines(normalized.actionItems, 12);
   const risks = sanitizeOutputLines(normalized.risks, 12);
   const quotes = sanitizeOutputLines(normalized.quotes, 8);
@@ -2675,6 +2681,7 @@ function normalizeExtractedPayload(extracted, templateId) {
     oneSentence,
     executiveSummary,
     sections,
+    memoCategories,
     actionItems,
     risks,
     quotes,
@@ -2688,6 +2695,45 @@ function normalizeExtractedPayload(extracted, templateId) {
       : null,
     oiNewsDraft: normalizeOiNewsDraft(normalized.oiNewsDraft),
   };
+}
+
+function normalizeMemoCategories(categories) {
+  if (!Array.isArray(categories)) {
+    return [];
+  }
+
+  return categories
+    .map((category) => {
+      const title = cleanGeneratedText(category?.title);
+      const groups = normalizeMemoCategoryGroups(category?.groups);
+      const lines = sanitizeOutputLines(category?.lines, 80);
+      const quotes = sanitizeOutputLines(category?.quotes, 12);
+      if (!title || (!groups.length && !lines.length && !quotes.length)) {
+        return null;
+      }
+      return { title, groups, lines, quotes };
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function normalizeMemoCategoryGroups(groups) {
+  if (!Array.isArray(groups)) {
+    return [];
+  }
+
+  return groups
+    .map((group) => {
+      const title = cleanGeneratedText(group?.title);
+      const lines = sanitizeOutputLines(group?.lines, 80);
+      const quotes = sanitizeOutputLines(group?.quotes, 12);
+      if (!title || (!lines.length && !quotes.length)) {
+        return null;
+      }
+      return { title, lines, quotes };
+    })
+    .filter(Boolean)
+    .slice(0, 20);
 }
 
 function normalizeSections(sections) {
@@ -3064,7 +3110,7 @@ async function tryLLMExtraction({
     company,
     meetingType,
     participants,
-    transcriptText: compactTextForLLM(transcriptText, LLM_INPUT_CHAR_LIMIT),
+    transcriptText: compactTextForLLM(transcriptText, getLlmInputLimitForTemplate(template.id)),
     template,
     userInstructions,
     terminologyHints,
@@ -3149,9 +3195,13 @@ function buildExtractionPrompt({ title, company, meetingType, participants, tran
         ? [
             "- For Interview Memo, keep the structure compact and avoid repeating the same point across one-line take, summary, takeaways, and later sections.",
             "- Preserve interview completeness. Do not drop detailed technical, product, commercial, or management discussion just because it is too granular.",
-            "- Use broad company sections only as top-level containers. Within sections, create specific subtopics based on the actual interview focus.",
-            "- Split mixed topics into separate section objects or bullets. Do not put revenue, GTM, and technical architecture under the same generic section if they are separate facts.",
-            "- The memo is a cleaned source-preserving record, not a high-level summary. Preserve all material facts and classify them; do not omit granular details.",
+            "- The memo is a lightly cleaned source-preserving record, not a high-level summary. Preserve material details and classify them; do not omit granular facts.",
+            "- Use `memoCategories` as the main body. Create category titles from the actual discussion, e.g. `世界模型与人类模态数据`, `数据采集范式`, `规模化数据生产`, `硬件与评测闭环`, `客户与商业化`, `融资与治理`.",
+            "- `memoCategories` should have enough density to feel like a detailed cleaned note. For a long transcript, each important topic should usually contain multiple lines, not one compressed bullet.",
+            "- For transcripts above ~10k Chinese characters, produce a source-preserving memo with at least 60 detailed `memoCategories` lines if the source supports it.",
+            "- Preserve concrete sub-discussions such as technology route debates, alternative approaches rejected, customer validation examples, pricing logic, hardware specs, data operations, evaluation setup, team background, compliance constraints, and fundraising context.",
+            "- Use broad company buckets only if they naturally fit. Do not force fixed Team / Business / Product / Commercial sections if the transcript focus is narrower or more technical.",
+            "- Split mixed topics into separate category groups. Do not put revenue, GTM, and technical architecture under the same generic section if they are separate facts.",
             "- If the interview spends time on ego-centric data, data collection devices, sensor rigs, data infrastructure, labeling, simulation, or evaluation tooling, create a dedicated data-related section under Product / Technology.",
             "- Put go-to-market, customer, channel, and deployment-market discussion under Business / Strategy, not Product / Technology.",
             "- Put revenue model, pricing, margin, unit economics, fundraising, valuation, and IPO discussion under Commercial / Financial Signals, not Product / Technology.",
@@ -3246,6 +3296,23 @@ function buildExtractionPrompt({ title, company, meetingType, participants, tran
           risks: ["risk"],
           nextSteps: ["next step"],
         },
+        memoCategories: [
+          {
+            title: "中文讨论主类目，必须基于实际访谈重点命名",
+            groups: [
+              {
+                title: "更具体的二级主题，避免重复和泛化",
+                lines: [
+                  "保留原始细节的中文要点；不要为了漂亮而压缩掉数字、限定条件、例子、判断依据",
+                  "如果一段话有多个独立事实，拆成多条 lines",
+                ],
+                quotes: ["被访谈者关键原话，保留中文原意"],
+              },
+            ],
+            lines: ["没有二级主题时才使用的直接要点"],
+            quotes: ["属于整个类目的关键原话"],
+          },
+        ],
         weeklyReportDraft: {
           title: "[Startup] Company",
           meetingInformation: {
@@ -3299,6 +3366,18 @@ function buildExtractionPrompt({ title, company, meetingType, participants, tran
       2,
     ),
     "Rules:",
+    "- For Interview Memo outputs, use Chinese as the primary working language unless the user explicitly asks for English. Keep English technical terms and company names as-is.",
+    "- For Interview Memo outputs, populate `memoCategories` as the primary memo body. The category titles must follow the actual discussion focus, not a fixed template.",
+    "- `memoCategories` should preserve details: use many precise lines rather than a few broad summaries. Keep numbers, examples, customer names, technical route details, constraints, and sequence logic.",
+    "- For a long interview transcript, target a detailed memo body: usually 8 to 14 memo categories/groups total and 60 to 120 detailed lines across `memoCategories`. Do not collapse a long discussion into fewer than 40 detail lines unless the source is genuinely short.",
+    "- Keep `oneSentence` and `executiveSummary` short. Do not hide the important details only in the summary; the detailed facts must live inside `memoCategories`.",
+    "- Each `memoCategories.groups[].lines` item should preserve one atomic fact, argument, example, number, or constraint. If one source paragraph contains five facts, output five lines.",
+    "- Include 8 to 16 meaningful quotes for long interviews when the transcript contains strong management POV. Place quotes under the relevant group.",
+    "- Do only minimal MECE cleanup: merge exact duplicates, split mixed paragraphs, and group adjacent related points. Do not delete granular but meaningful facts.",
+    "- If the transcript is mostly technical, `memoCategories` can be mostly technical. Do not force Team, GTM, or Financial sections when the transcript did not discuss them.",
+    "- Keep interviewer/HMG context out of company facts unless it is necessary to explain the answer. Do not treat the interviewer opinion as company evidence.",
+    "- Put quotes directly inside the relevant `memoCategories.groups[].quotes`; do not create a quote dump.",
+    "- Avoid translating Chinese transcript content into polished English in `memoCategories`. Translate only if the user explicitly requests English output.",
     "- Stay factual and avoid making up numbers.",
     "- Preservation is more important than compression. Do not drop meaningful facts just to make the note cleaner.",
     "- Organize and clean the material, but do not merge separate points into one if that loses specificity.",
@@ -3327,6 +3406,14 @@ function buildExtractionPrompt({ title, company, meetingType, participants, tran
     "Meeting packet:",
     transcriptText,
   ].join("\n");
+}
+
+function isInterviewMemoTemplate(templateId) {
+  return templateId === "interview-knowledge-base" || templateId === "interview-free-style";
+}
+
+function getLlmInputLimitForTemplate(templateId) {
+  return isInterviewMemoTemplate(templateId) ? INTERVIEW_MEMO_INPUT_CHAR_LIMIT : LLM_INPUT_CHAR_LIMIT;
 }
 
 function getArtifactPath(job, artifactType) {
@@ -4012,7 +4099,8 @@ function renderInterviewMarkdownV3(structured) {
   const meta = structured.meeting.meta;
   const focusProfile = structured.focusProfile || deriveFocusProfile(structured);
   const sourceNotes = buildInterviewSourceNotes(structured);
-  const groupedSections = buildMemoV3Sections(structured);
+  const llmMemoCategories = buildLlmMemoCategorySections(structured);
+  const groupedSections = llmMemoCategories.length ? llmMemoCategories : buildMemoV3Sections(structured);
   const investmentTakeLines = dedupeLines(
     [
       ...toBulletLines(structured.summary.executiveSummary, 5),
@@ -4061,7 +4149,7 @@ function renderInterviewMarkdownV3(structured) {
       group.quotes.forEach((quote) => lines.push(`  > [!QUOTE] "${emphasizeMemoLine(stripWrappingQuotes(quote))}"`));
     });
 
-    if (section.title === "Commercial / Financial Signals" && hasUsefulFundraisingContent(section.fundraisingRows, section.fundraisingNotes)) {
+    if (section.shouldRenderFundingSnapshot && hasUsefulFundraisingContent(section.fundraisingRows, section.fundraisingNotes)) {
       lines.push("");
       lines.push("### Fundraising Snapshot");
       lines.push("");
@@ -4103,6 +4191,78 @@ function renderInterviewMarkdownV3(structured) {
   lines.push("</details>");
   lines.push("");
   return lines.join("\n");
+}
+
+function buildLlmMemoCategorySections(structured) {
+  if (!Array.isArray(structured.memoCategories) || !structured.memoCategories.length) {
+    return [];
+  }
+
+  const sections = structured.memoCategories
+    .map((category) => {
+      const groups = [];
+
+      (category.groups || []).forEach((group) => {
+        const title = cleanTranscriptArtifact(group.title || category.title || "Discussion");
+        const lines = sanitizeMemoCategoryLines(group.lines, 80);
+        const quotes = sanitizeMemoCategoryLines(group.quotes, 16);
+        if (lines.length || quotes.length) {
+          groups.push({ title, lines, quotes });
+        }
+      });
+
+      const directLines = sanitizeMemoCategoryLines(category.lines, 80);
+      const directQuotes = sanitizeMemoCategoryLines(category.quotes, 16);
+      if (directLines.length || directQuotes.length) {
+        groups.push({
+          title: cleanTranscriptArtifact(category.title || "Discussion"),
+          lines: directLines,
+          quotes: directQuotes,
+        });
+      }
+
+      return {
+        key: "llm-category",
+        title: cleanTranscriptArtifact(category.title || "Discussion"),
+        groups,
+        fundraisingRows: [],
+        fundraisingNotes: [],
+        shouldRenderFundingSnapshot: false,
+      };
+    })
+    .filter((section) => section.title && section.groups.length);
+
+  const fundingRows = deriveFundraisingRows(structured);
+  const fundingNotes = deriveFundraisingNotes(structured);
+  if (hasUsefulFundraisingContent(fundingRows, fundingNotes)) {
+    const fundingSection =
+      sections.find((section) => /融资|估值|上市|股东|fund|financing|valuation|ipo|shareholder/i.test(section.title)) ||
+      sections.find((section) =>
+        section.groups.some((group) =>
+          [group.title, ...group.lines].some((line) => /融资|估值|上市|股东|fund|financing|valuation|ipo|shareholder/i.test(line)),
+        ),
+      );
+    if (fundingSection) {
+      fundingSection.fundraisingRows = fundingRows;
+      fundingSection.fundraisingNotes = fundingNotes;
+      fundingSection.shouldRenderFundingSnapshot = true;
+    }
+  }
+
+  return sections;
+}
+
+function sanitizeMemoCategoryLines(lines, limit = 80) {
+  if (!Array.isArray(lines)) {
+    return [];
+  }
+
+  return dedupeLines(lines)
+    .map(normalizeMemoSectionLine)
+    .filter(Boolean)
+    .filter((line) => line !== "N/A")
+    .filter((line) => !looksLikeMostlyTranscriptGarbage(line))
+    .slice(0, limit);
 }
 
 function buildMemoV3Sections(structured) {
@@ -4150,6 +4310,7 @@ function buildMemoV3Sections(structured) {
   return Object.values(buckets)
     .map((bucket) => ({
       ...bucket,
+      shouldRenderFundingSnapshot: bucket.key === "commercial",
       groups: bucket.groups.filter((group) => group.lines.length || group.quotes.length),
     }))
     .filter((bucket) => bucket.groups.length || (bucket.key === "commercial" && hasUsefulFundraisingContent(bucket.fundraisingRows, bucket.fundraisingNotes)));

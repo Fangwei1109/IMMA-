@@ -76,6 +76,7 @@ Set provider keys in your shell or in a local `.env` file. Do not commit real ke
 - `DEEPSEEK_API_KEY`: DeepSeek-compatible chat completions
 - `DEEPSEEK_MODEL`: default `deepseek-v4-flash`. `deepseek-v4-pro` is available but much slower on the current structured memo/report prompts and can cause local generation timeouts.
 - `DEEPSEEK_BASE_URL`: default `https://api.deepseek.com`
+- `INTERVIEW_MEMO_INPUT_CHAR_LIMIT`: default `60000`; Interview Memo uses a larger source window to preserve transcript details before summarization.
 - `ALI_API_KEY`: Alibaba / Qwen-compatible chat completions
 - `ALI_MODEL`: default `qwen-plus`
 - `ALI_BASE_URL`: default `https://dashscope.aliyuncs.com/compatible-mode/v1`
